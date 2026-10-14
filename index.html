@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>即時行程板</title>
+<meta name="description" content="登記預計抵達時段與交通方式，即時聚合成每 15 分鐘的人數分布；個別登記不公開，少於 3 人的時段在資料庫端隱藏。">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&family=JetBrains+Mono:wght@500;700&display=swap">
+<style>
+body{margin:0}
+
+/* Layout: a departure-board timetable — one row per 15-minute slot, stacked by travel mode; your own row is marked, small counts are hidden */
+:root{
+  --bg:#eef1f4; --panel:#ffffff; --ink:#15212c; --muted:#5d6b78; --line:#d5dce3;
+  --accent:#1d5f7a; --accent-ink:#ffffff; --you:#e8a317; --hatch:#c3ccd5;
+  --m-car:#b9502d; --m-moto:#d4922a; --m-mrt:#2a7c74; --m-bus:#4e5aa8; --m-walk:#6f8436; --m-other:#8a96a3;
+  --display:"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif;
+  --body:"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,"SFMono-Regular",Menlo,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0f161d; --panel:#16212b; --ink:#e6edf3; --muted:#93a3b2; --line:#2a3846;
+  --accent:#5fb2cf; --accent-ink:#0b1218; --you:#f2b636; --hatch:#3a4a59;
+  --m-car:#e0754f; --m-moto:#e8ad4a; --m-mrt:#4fb3a8; --m-bus:#8b95e0; --m-walk:#9db55c; --m-other:#6b7886; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0f161d; --panel:#16212b; --ink:#e6edf3; --muted:#93a3b2; --line:#2a3846;
+  --accent:#5fb2cf; --accent-ink:#0b1218; --you:#f2b636; --hatch:#3a4a59;
+  --m-car:#e0754f; --m-moto:#e8ad4a; --m-mrt:#4fb3a8; --m-bus:#8b95e0; --m-walk:#9db55c; --m-other:#6b7886; color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--body);font-size:15px;line-height:1.6}
+.wrap{max-width:760px;margin:0 auto;padding-inline:16px;padding-block:20px 48px;display:grid;gap:18px}
+header{display:grid;gap:4px}
+.eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.08em;color:var(--muted);display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.live{display:inline-flex;align-items:center;gap:6px;color:var(--accent)}
+.live i{width:8px;height:8px;border-radius:50%;background:currentColor;display:inline-block}
+@media (prefers-reduced-motion:no-preference){.live.on i{animation:pulse 1.6s ease-in-out infinite}}
+@keyframes pulse{50%{opacity:.25}}
+h1{font-family:var(--display);font-weight:900;font-size:clamp(26px,6vw,34px);line-height:1.2;margin:0;text-wrap:balance}
+.lede{color:var(--muted);margin:0;max-width:62ch}
+.boards{display:flex;gap:8px;flex-wrap:wrap}
+.chip{font:inherit;font-size:14px;border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:6px 12px;border-radius:999px;cursor:pointer}
+.chip[aria-pressed="true"]{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.chip:focus-visible,button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.board{background:var(--panel);border:1px solid var(--line);border-radius:6px;overflow:hidden}
+.bhead{padding:14px 16px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:baseline}
+.bhead h2{margin:0;font-size:18px;font-weight:700}
+.bmeta{font-family:var(--mono);font-size:12px;color:var(--muted)}
+.stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));border-bottom:1px solid var(--line)}
+.stat{padding:10px 16px;min-width:0}
+.stat+.stat{border-left:1px solid var(--line)}
+.stat dt{font-size:12px;color:var(--muted)}
+.stat dd{margin:0;font-family:var(--mono);font-weight:700;font-size:17px;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.legend{display:flex;gap:12px;flex-wrap:wrap;padding:10px 16px;font-size:12px;color:var(--muted);border-bottom:1px solid var(--line)}
+.legend span{display:inline-flex;align-items:center;gap:5px}
+.legend b{width:10px;height:10px;border-radius:2px;display:inline-block}
+.rows{display:grid}
+.row{display:grid;grid-template-columns:58px minmax(0,1fr) 44px;align-items:center;gap:10px;padding:5px 16px;border:0;border-top:1px solid var(--line);background:none;color:inherit;font:inherit;text-align:left;cursor:pointer;width:100%}
+.row:first-child{border-top:0}
+.row:hover{background:color-mix(in srgb,var(--accent) 7%,transparent)}
+.row.mine{background:color-mix(in srgb,var(--you) 16%,transparent)}
+.row.picked{box-shadow:inset 3px 0 0 var(--accent)}
+.row.now .t::after{content:"現在";font-family:var(--body);font-size:10px;color:var(--accent);margin-left:4px}
+.t{font-family:var(--mono);font-size:13px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.bar{height:16px;display:flex;border-radius:2px;overflow:hidden;min-width:0}
+.bar i{display:block;height:100%}
+.bar.hidden{width:28px;background:repeating-linear-gradient(135deg,var(--hatch) 0 3px,transparent 3px 6px)}
+.n{font-family:var(--mono);font-size:13px;text-align:right;font-variant-numeric:tabular-nums;color:var(--muted)}
+.n.big{color:var(--ink);font-weight:700}
+.you{font-size:10px;background:var(--you);color:#1a1205;border-radius:3px;padding:0 4px;margin-left:6px;font-family:var(--body);font-weight:700}
+.empty{padding:14px 16px;color:var(--muted);font-size:14px;border-top:1px solid var(--line)}
+.mine-panel{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:16px;display:grid;gap:12px}
+.mine-panel h3{margin:0;font-size:16px}
+.field{display:grid;gap:6px}
+.field label,.field .lbl{font-size:13px;color:var(--muted)}
+.modes{display:flex;gap:8px;flex-wrap:wrap}
+.mode{font:inherit;font-size:14px;border:1px solid var(--line);background:transparent;color:var(--ink);padding:6px 12px;border-radius:4px;cursor:pointer;display:inline-flex;gap:6px;align-items:center}
+.mode b{width:10px;height:10px;border-radius:2px;display:inline-block}
+.mode[aria-pressed="true"]{border-color:var(--ink);box-shadow:inset 0 0 0 1px var(--ink)}
+select,input{font:inherit;font-size:15px;padding:7px 10px;border:1px solid var(--line);border-radius:4px;background:var(--bg);color:var(--ink);max-width:100%}
+.actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.btn{font:inherit;font-weight:700;font-size:14px;padding:8px 16px;border-radius:4px;border:1px solid var(--accent);background:var(--accent);color:var(--accent-ink);cursor:pointer}
+.btn.ghost{background:transparent;color:var(--accent)}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.status{font-size:13px;color:var(--muted);min-height:1.4em}
+.rules{border-left:3px solid var(--line);padding:2px 0 2px 14px;display:grid;gap:4px;font-size:14px;color:var(--muted)}
+.rules strong{color:var(--ink);font-weight:700}
+.rules p{margin:0}
+details.admin{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:12px 16px}
+details.admin summary{cursor:pointer;font-weight:700;font-size:14px}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-top:12px}
+.note{font-size:12px;color:var(--muted)}
+.sample-tag{font-family:var(--mono);font-size:11px;background:var(--you);color:#1a1205;padding:1px 6px;border-radius:3px}
+@media (max-width:420px){.stat{padding:8px 10px}.stat dd{font-size:15px}.row{grid-template-columns:52px minmax(0,1fr) 38px;gap:8px;padding-inline:12px}}
+
+footer.note a{color:var(--accent)}
+
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="eyebrow"><span class="live" id="live"><i></i><span id="liveText">連線中</span></span><span id="clock">--:--</span></div>
+    <h1>即時行程板</h1>
+    <p class="lede">登記你打算幾點抵達、怎麼過去。畫面只顯示每 15 分鐘的合計，不顯示任何人的名字或個別行程。</p>
+  </header>
+
+  <nav class="boards" id="boards" aria-label="選擇地點"></nav>
+
+  <section class="board" aria-live="polite">
+    <div class="bhead">
+      <h2 id="bName">載入中</h2>
+      <span class="bmeta" id="bMeta"></span>
+    </div>
+    <dl class="stats">
+      <div class="stat"><dt>已登記</dt><dd id="sTotal">—</dd></div>
+      <div class="stat"><dt>尖峰時段</dt><dd id="sPeak">—</dd></div>
+      <div class="stat"><dt>主要方式</dt><dd id="sMode">—</dd></div>
+    </dl>
+    <div class="legend" id="legend"></div>
+    <div class="rows" id="rows"></div>
+    <div class="empty" id="empty" hidden></div>
+  </section>
+
+  <section class="mine-panel" id="minePanel" hidden>
+    <h3>我的登記</h3>
+    <div class="field">
+      <label for="slotSel">預計抵達時段</label>
+      <select id="slotSel"></select>
+    </div>
+    <div class="field">
+      <span class="lbl" id="modeLbl">交通方式</span>
+      <div class="modes" id="modes" role="group" aria-labelledby="modeLbl"></div>
+    </div>
+    <div class="actions">
+      <button class="btn" id="save" type="button">登記這個時段</button>
+      <button class="btn ghost" id="withdraw" type="button" hidden>撤回我的登記</button>
+    </div>
+    <div class="status" id="status"></div>
+  </section>
+
+  <section class="rules" aria-label="資料規則">
+    <p><strong>不需要帳號，也不存名字。</strong>第一次登記時，這個瀏覽器會拿到一個匿名身分，登記只掛在這個身分底下。</p>
+    <p><strong>個別登記誰都讀不到。</strong>資料庫只對外提供合計；少於 3 人的時段和少於 3 人的交通方式，在資料庫端就先隱藏。</p>
+    <p><strong>隨時可以撤回。</strong>撤回後你的紀錄直接刪除。清除瀏覽器資料會失去匿名身分，請先撤回再清除。</p>
+  </section>
+
+  <footer class="note">原始碼與資料規則：<a href="https://github.com/p19691221-web/realtime-schedule">github.com/p19691221-web/realtime-schedule</a></footer>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script>
+const SB_URL="https://ljkuyzecswztbvbntscl.supabase.co";
+const SB_KEY="sb_publishable_n2KeDq7FxYjlInMmVjJfhg_9U-r4TJL"; // 公開金鑰，可放在前端；資料由 RLS 保護
+
+const MODES=[
+  {k:"car",label:"汽車",v:"--m-car"},
+  {k:"moto",label:"機車",v:"--m-moto"},
+  {k:"mrt",label:"捷運",v:"--m-mrt"},
+  {k:"bus",label:"公車",v:"--m-bus"},
+  {k:"walk",label:"步行／單車",v:"--m-walk"},
+  {k:"other",label:"其他（少於 3 人的方式）",v:"--m-other",agg:true}
+];
+const $=id=>document.getElementById(id);
+const hm=t=>String(t).slice(0,5);
+
+let sb=null,channel=null,session=null;
+let boards=[],currentId=null,counts=[],total=null,mine=null;
+let pickSlot=null,pickMode=null,writing=false,loading=false;
+
+function slotsFor(b){
+  const toMin=s=>{const[h,m]=s.split(":").map(Number);return h*60+m};
+  const out=[];for(let t=toMin(hm(b.start_time));t<toMin(hm(b.end_time));t+=15)out.push(String(Math.floor(t/60)).padStart(2,"0")+":"+String(t%60).padStart(2,"0"));
+  return out;
+}
+function slotEnd(s){const[h,m]=s.split(":").map(Number);const t=h*60+m+15;return String(Math.floor(t/60)).padStart(2,"0")+":"+String(t%60).padStart(2,"0")}
+const current=()=>boards.find(b=>b.id===currentId);
+const setStatus=t=>{$("status").textContent=t};
+function setLive(text,on){$("liveText").textContent=text;$("live").classList.toggle("on",!!on)}
+
+function renderBoards(){
+  const nav=$("boards");nav.replaceChildren();
+  boards.forEach(b=>{const btn=document.createElement("button");btn.type="button";btn.className="chip";btn.textContent=b.name;
+    btn.setAttribute("aria-pressed",String(b.id===currentId));
+    btn.onclick=()=>{if(b.id===currentId)return;currentId=b.id;pickSlot=null;pickMode=null;mine=null;counts=[];total=null;try{localStorage.setItem("rsb.board",b.id)}catch(e){}renderAll();refresh()};
+    nav.appendChild(btn)});
+}
+function renderLegend(){
+  const l=$("legend");l.replaceChildren();
+  MODES.forEach(m=>{const s=document.createElement("span");const b=document.createElement("b");b.style.background=`var(${m.v})`;s.append(b,m.agg?"其他":m.label);l.appendChild(s)});
+  const h=document.createElement("span");const hb=document.createElement("b");hb.style.background="repeating-linear-gradient(135deg,var(--hatch) 0 2px,transparent 2px 4px)";h.append(hb,"少於 3 人");l.appendChild(h);
+}
+
+function renderBoard(){
+  const b=current();
+  if(!b){$("bName").textContent=boards.length?"載入中":"還沒有地點";$("bMeta").textContent="";$("rows").replaceChildren();return}
+  $("bName").textContent=b.name;
+  $("bMeta").textContent=[b.place,b.day,`${hm(b.start_time)}–${hm(b.end_time)}`].filter(Boolean).join("・");
+  const slots=slotsFor(b);
+  const bySlot=new Map(counts.map(r=>[hm(r.slot),r]));
+  const visible=slots.map(s=>{const r=bySlot.get(s);return r&&!r.small?r.total:0});
+  const max=Math.max(3,...visible);
+  const now=new Date(),nowKey=String(now.getHours()).padStart(2,"0")+":"+String(Math.floor(now.getMinutes()/15)*15).padStart(2,"0");
+
+  const any=counts.length>0;
+  $("sTotal").textContent=total!=null?total+" 人":any?"少於 3 人":"0 人";
+  let pi=-1;visible.forEach((n,i)=>{if(n>0&&(pi<0||n>visible[pi]))pi=i});
+  $("sPeak").textContent=pi<0?"—":`${slots[pi]}–${slotEnd(slots[pi])}`;
+  const mt={};counts.forEach(r=>{if(r.modes)for(const[k,n]of Object.entries(r.modes))if(k!=="other")mt[k]=(mt[k]||0)+n});
+  const top=Object.entries(mt).sort((a,b)=>b[1]-a[1])[0];
+  $("sMode").textContent=top?MODES.find(m=>m.k===top[0]).label:"—";
+
+  const rows=$("rows");rows.replaceChildren();
+  slots.forEach((s,i)=>{
+    const r=bySlot.get(s);
+    const row=document.createElement("button");row.type="button";row.className="row";
+    if(mine&&hm(mine.slot)===s)row.classList.add("mine");
+    if(pickSlot===s)row.classList.add("picked");
+    if(s===nowKey)row.classList.add("now");
+    const t=document.createElement("span");t.className="t";t.textContent=s;
+    const bar=document.createElement("span");bar.className="bar";
+    const num=document.createElement("span");num.className="n";
+    let label;
+    if(!r){num.textContent="0";label="沒有人"}
+    else if(r.small){bar.classList.add("hidden");num.textContent="<3";label="少於 3 人"}
+    else{
+      bar.style.width=(r.total/max*100)+"%";
+      MODES.forEach(m=>{const c=(r.modes||{})[m.k]||0;if(!c)return;const seg=document.createElement("i");seg.style.width=(c/r.total*100)+"%";seg.style.background=`var(${m.v})`;seg.title=`${m.label} ${c}`;bar.appendChild(seg)});
+      num.textContent=r.total;num.classList.add("big");label=r.total+" 人";
+    }
+    row.setAttribute("aria-label",`${s} 到 ${slotEnd(s)}，${label}。選這個時段`);
+    const mid=document.createElement("span");mid.style.cssText="display:flex;align-items:center;min-width:0";mid.appendChild(bar);
+    if(mine&&hm(mine.slot)===s){const y=document.createElement("span");y.className="you";y.textContent="你";mid.appendChild(y)}
+    row.append(t,mid,num);
+    row.onclick=()=>{pickSlot=s;$("slotSel").value=s;renderBoard();updateMine()};
+    rows.appendChild(row);
+  });
+  const e=$("empty");
+  if(!any&&!loading){e.hidden=false;e.textContent="這個時段板還沒有人登記。點一列時間，選交通方式，就是第一筆。"}else e.hidden=true;
+}
+
+function renderMine(){
+  const b=current(),sel=$("slotSel");sel.replaceChildren();
+  if(!b){$("minePanel").hidden=true;return}
+  $("minePanel").hidden=false;
+  slotsFor(b).forEach(s=>sel.add(new Option(`${s}–${slotEnd(s)}`,s)));
+  if(pickSlot==null&&mine)pickSlot=hm(mine.slot);
+  if(pickMode==null&&mine)pickMode=mine.mode;
+  if(pickSlot)sel.value=pickSlot;else sel.selectedIndex=-1;
+  const ms=$("modes");ms.replaceChildren();
+  MODES.filter(m=>!m.agg).forEach(m=>{const btn=document.createElement("button");btn.type="button";btn.className="mode";
+    const sw=document.createElement("b");sw.style.background=`var(${m.v})`;btn.append(sw,m.label);
+    btn.setAttribute("aria-pressed",String(pickMode===m.k));
+    btn.onclick=()=>{pickMode=m.k;renderMine()};ms.appendChild(btn)});
+  updateMine();
+}
+function updateMine(){
+  const changed=!mine||hm(mine.slot)!==pickSlot||mine.mode!==pickMode;
+  $("save").textContent=mine?"更新登記":"登記這個時段";
+  $("save").disabled=!sb||writing||!pickSlot||!pickMode||!changed;
+  $("withdraw").hidden=!mine;$("withdraw").disabled=writing;
+  if(!writing&&(!pickSlot||!pickMode)&&!mine)setStatus("點上方任一時段，或從選單挑一個，再選交通方式。");
+}
+function renderAll(){renderBoards();renderBoard();renderMine()}
+
+async function loadBoards(){
+  const {data,error}=await sb.from("boards").select("*").order("sort");
+  if(error)throw error;
+  boards=data||[];
+  try{const saved=localStorage.getItem("rsb.board");if(saved&&boards.find(b=>b.id===saved))currentId=saved}catch(e){}
+  if(!current())currentId=boards[0]?boards[0].id:null;
+}
+async function refresh(){
+  const b=current();if(!b||!sb)return;
+  loading=true;
+  const id=b.id;
+  const [c,t,m]=await Promise.all([
+    sb.rpc("board_counts",{p_board:id}),
+    sb.rpc("board_total",{p_board:id}),
+    session?sb.from("intents").select("slot,mode").eq("board_id",id).maybeSingle():Promise.resolve({data:null})
+  ]);
+  loading=false;
+  if(id!==currentId)return;
+  if(c.error||t.error){setLive("連線中斷");return}
+  counts=c.data||[];total=t.data;mine=m.data||null;
+  setLive("即時",true);
+  renderBoard();updateMine();
+}
+async function ensureSession(){
+  if(session)return session;
+  const {data,error}=await sb.auth.signInAnonymously();
+  if(error)throw error;
+  session=data.session;return session;
+}
+function announce(){try{channel&&channel.send({type:"broadcast",event:"changed",payload:{board:currentId}})}catch(e){}}
+
+$("save").onclick=async()=>{
+  if(!pickSlot||!pickMode)return;
+  writing=true;updateMine();setStatus("儲存中…");
+  try{
+    const s=await ensureSession();
+    const {error}=await sb.from("intents").upsert({user_id:s.user.id,board_id:currentId,slot:pickSlot,mode:pickMode},{onConflict:"user_id,board_id"});
+    if(error)throw error;
+    setStatus(`已登記 ${pickSlot}–${slotEnd(pickSlot)}・${MODES.find(m=>m.k===pickMode).label}`);
+    announce();await refresh();
+  }catch(e){setStatus("沒有存成功："+(e&&e.message?e.message:"請稍後再試一次。"))}
+  finally{writing=false;updateMine()}
+};
+$("withdraw").onclick=async()=>{
+  writing=true;updateMine();setStatus("撤回中…");
+  try{
+    const {error}=await sb.from("intents").delete().eq("board_id",currentId);
+    if(error)throw error;
+    mine=null;pickSlot=null;pickMode=null;setStatus("已撤回，你的紀錄已刪除。");
+    announce();await refresh();renderMine();
+  }catch(e){setStatus("撤回失敗："+(e&&e.message?e.message:"請稍後再試一次。"))}
+  finally{writing=false;updateMine()}
+};
+$("slotSel").onchange=e=>{pickSlot=e.target.value;renderBoard();updateMine()};
+
+function tick(){$("clock").textContent=new Date().toLocaleTimeString("zh-TW",{hour:"2-digit",minute:"2-digit",hour12:false})}
+tick();setInterval(tick,30000);
+renderLegend();
+
+(async()=>{
+  if(!window.supabase){setLive("無法載入");$("bName").textContent="無法連線";return}
+  sb=window.supabase.createClient(SB_URL,SB_KEY,{auth:{persistSession:true,autoRefreshToken:true}});
+  try{
+    const {data}=await sb.auth.getSession();session=data.session;
+    await loadBoards();renderAll();await refresh();renderMine();
+  }catch(e){setLive("連線中斷");$("bName").textContent="無法讀取資料";return}
+  let timer=null;
+  channel=sb.channel("board-updates").on("broadcast",{event:"changed"},p=>{
+    if(p.payload&&p.payload.board===currentId){clearTimeout(timer);timer=setTimeout(refresh,400)}
+  }).subscribe();
+  setInterval(()=>{if(document.visibilityState==="visible")refresh()},30000);
+  document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible")refresh()});
+})();
+</script>
+
+</body>
+</html>
